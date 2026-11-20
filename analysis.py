@@ -1,0 +1,212 @@
+# Project 10 - Banking Transaction Pattern Analysis
+# Only numpy and pandas are used (both come preinstalled in Colab)
+#
+# How to run:
+#   1. Upload 10_bank_transactions_1200.csv in the Colab Files sidebar
+#   2. Paste each "# %%" part into its own cell
+#   3. Runtime -> Run all
+
+#Name:Krishan Pratap
+#Adm.no.: 2026B01010801
+
+# %%
+# ---------- Step 1: load the data and have a first look ----------
+import numpy as np
+import pandas as pd
+
+pd.options.display.float_format = "{:,.2f}".format   # show 2 decimals everywhere
+pd.set_option("display.width", 200)
+pd.set_option("display.max_columns", None)
+
+df = pd.read_csv("10_bank_transactions_1200.csv")
+df["Transaction_Date"] = pd.to_datetime(df["Transaction_Date"])  # string -> date
+
+print("Rows and columns:", df.shape)
+print("Dates from", df["Transaction_Date"].min().date(),
+      "to", df["Transaction_Date"].max().date())
+print("Unique dates:", df["Transaction_Date"].nunique())
+print()
+print(df.dtypes)
+print()
+print(df.head())
+
+# %%
+# ---------- Step 2: cleaning ----------
+# check which columns have missing values
+print(df.isnull().sum())
+
+missing_count = df["Amount_INR"].isnull().sum()
+missing_pct = missing_count / len(df) * 100
+print("\nMissing Amount_INR:", missing_count, "->", round(missing_pct, 2), "%")
+
+# total before filling (pandas just skips the NaN values when summing)
+total_before = df["Amount_INR"].sum()
+
+# using median because a few very big amounts would pull the mean up
+median_value = df["Amount_INR"].median()
+print("Median amount:", round(median_value, 2))
+
+df["Amount_INR"] = df["Amount_INR"].fillna(median_value)
+
+total_after = df["Amount_INR"].sum()
+print("Total before filling:", round(total_before, 2))
+print("Total after filling :", round(total_after, 2))
+print("Missing left:", df["Amount_INR"].isnull().sum())
+
+# duplicate check on Transaction_ID
+dups = df["Transaction_ID"].duplicated().sum()
+print("\nDuplicate Transaction_IDs:", dups)
+print("Unique IDs:", df["Transaction_ID"].nunique(), "out of", len(df))
+if dups == 0:
+    print("Good, every Transaction_ID is unique.")
+else:
+    print("Careful, there are duplicates!")
+
+# %%
+# ---------- Step 3: credits vs debits and basic statistics ----------
+type_summary = df.groupby("Transaction_Type")["Amount_INR"].agg(["count", "sum"])
+type_summary.columns = ["Txn_Count", "Total_Value"]
+type_summary["Share_%"] = type_summary["Total_Value"] / type_summary["Total_Value"].sum() * 100
+print(type_summary)
+
+# now the numpy part: turn the column into an array first
+amounts = df["Amount_INR"].to_numpy()
+
+print("\nMean   :", round(np.mean(amounts), 2))
+print("Median :", round(np.median(amounts), 2))
+print("Std dev:", round(np.std(amounts, ddof=1), 2))   # ddof=1 -> sample std
+print("Min    :", round(amounts.min(), 2))
+print("Max    :", round(amounts.max(), 2))
+
+# %%
+# ---------- Step 4: channels and cities ----------
+channel_summary = df.groupby("Channel").agg(
+    Txn_Count=("Transaction_ID", "count"),
+    Total_Value=("Amount_INR", "sum"),
+)
+channel_summary = channel_summary.sort_values("Txn_Count", ascending=False)
+channel_summary["Volume_%"] = channel_summary["Txn_Count"] / channel_summary["Txn_Count"].sum() * 100
+channel_summary["Value_%"] = channel_summary["Total_Value"] / channel_summary["Total_Value"].sum() * 100
+print("Channels:")
+print(channel_summary)
+
+city_summary = df.groupby("City").agg(
+    Total_Value=("Amount_INR", "sum"),
+    Txn_Count=("Transaction_ID", "count"),
+)
+city_summary = city_summary.sort_values("Total_Value", ascending=False)
+city_summary["Value_%"] = city_summary["Total_Value"] / city_summary["Total_Value"].sum() * 100
+print("\nCities:")
+print(city_summary)
+
+# %%
+# ---------- Step 5: flagged transactions ----------
+flagged_total = (df["Flagged"] == "Yes").sum()
+flagged_pct = flagged_total / len(df) * 100
+print("Flagged:", flagged_total, "out of", len(df), "=", round(flagged_pct, 2), "%")
+
+# flagged % for each channel
+flag_table = pd.crosstab(df["Channel"], df["Flagged"])
+flag_table["Total"] = flag_table["No"] + flag_table["Yes"]
+flag_table["Flagged_%"] = flag_table["Yes"] / flag_table["Total"] * 100
+flag_table = flag_table.sort_values("Flagged_%", ascending=False)
+print("\nFlagged by channel:")
+print(flag_table[["Yes", "Total", "Flagged_%"]])
+
+# %%
+# ---------- Step 6: top 10, account types, bands, numpy filter ----------
+top10 = df.nlargest(10, "Amount_INR")
+print("Top 10 largest transactions:")
+print(top10.to_string(index=False))
+top10_flagged = (top10["Flagged"] == "Yes").sum()
+print("Flagged ones in the top 10:", top10_flagged)
+
+# credit and debit for each account type
+print("\nBy account type:")
+acct = df.groupby(["Account_Type", "Transaction_Type"])["Amount_INR"].agg(["count", "sum"])
+print(acct)
+
+acct_pivot = df.pivot_table(index="Account_Type", columns="Transaction_Type",
+                            values="Amount_INR", aggfunc="sum")
+acct_pivot["Net"] = acct_pivot["Credit"] - acct_pivot["Debit"]
+print()
+print(acct_pivot)
+
+# amount bands (5 of them, in order)
+edges = [0, 250, 500, 1000, 2500, np.inf]
+names = ["Very Low (<=250)", "Low (251-500)", "Medium (501-1000)",
+         "High (1001-2500)", "Very High (>2500)"]
+df["Amount_Band"] = pd.cut(df["Amount_INR"], bins=edges, labels=names)
+
+bands = df.groupby("Amount_Band", observed=False)["Amount_INR"].agg(["count", "sum"])
+bands.columns = ["Txn_Count", "Total_Value"]
+bands["Volume_%"] = bands["Txn_Count"] / len(df) * 100
+bands["Value_%"] = bands["Total_Value"] / bands["Total_Value"].sum() * 100
+print("\nAmount bands:")
+print(bands)
+
+small_pct = (amounts <= 500).sum() / len(amounts) * 100
+print("\nTransactions of 500 or less:", round(small_pct, 2), "%")
+
+# numpy boolean indexing for amounts above 1000
+big = amounts[amounts > 1000]
+big_count = len(big)
+big_total = big.sum()
+big_count_pct = big_count / len(amounts) * 100
+big_value_pct = big_total / amounts.sum() * 100
+
+print("\nTransactions above 1000:", big_count, "(", round(big_count_pct, 2), "% of all )")
+print("Their total value:", round(big_total, 2), "(", round(big_value_pct, 2), "% of total value )")
+
+# %%
+# ---------- Step 7: recommendations ----------
+# the numbers below are pulled from the results above, nothing typed in by hand
+top_channel = channel_summary.index[0]
+second_channel = channel_summary.index[1]
+
+best_flag = flag_table.iloc[0]
+second_flag = flag_table.iloc[1]
+lowest_flag = flag_table.iloc[-1]
+
+city1, city2 = city_summary.index[0], city_summary.index[1]
+top2_city_pct = city_summary["Value_%"].iloc[0] + city_summary["Value_%"].iloc[1]
+last_city = city_summary.index[-1]
+last_city_pct = city_summary["Value_%"].iloc[-1]
+
+print("FIVE RECOMMENDATIONS\n")
+
+print("1. Review high-value transactions in steps")
+print(f"   Only {big_count_pct:.2f}% of transactions ({big_count} records above 1000) make up "
+      f"{big_value_pct:.2f}% of the total value, and {top10_flagged} of the top 10 are flagged. "
+      f"A tiered review for big transfers could work, while small payments "
+      f"({small_pct:.2f}% are 500 or less) stay quick and easy.\n")
+
+print("2. Support digital channels and move small branch work online")
+print(f"   {top_channel} has the most transactions "
+      f"({int(channel_summary.iloc[0]['Txn_Count'])}, {channel_summary.iloc[0]['Volume_%']:.2f}%) "
+      f"and {second_channel} is next "
+      f"({int(channel_summary.iloc[1]['Txn_Count'])}, {channel_summary.iloc[1]['Volume_%']:.2f}%). "
+      f"Keep NetBanking and UPI reliable and nudge routine small branch "
+      f"transactions towards them.\n")
+
+print("3. Don't over-read the channel flag rates")
+print(f"   {best_flag.name} ({best_flag['Flagged_%']:.2f}%) and {second_flag.name} "
+      f"({second_flag['Flagged_%']:.2f}%) look higher than {lowest_flag.name} "
+      f"({lowest_flag['Flagged_%']:.2f}%), but each channel only has "
+      f"{int(flag_table['Yes'].min())} to {int(flag_table['Yes'].max())} flagged records. "
+      f"Check on bigger real data before changing any monitoring rules.\n")
+
+print("4. Validate data when it comes in")
+print(f"   {missing_count} amounts ({missing_pct:.2f}%) were missing in this data. "
+      f"Adding a not-null check on Amount_INR at ingestion would stop "
+      f"incomplete records from reaching the reports.\n")
+
+print("5. Keep watching regions and account types over time")
+print(f"   {city1} and {city2} together give {top2_city_pct:.2f}% of the value, while "
+      f"{last_city} gives {last_city_pct:.2f}%. Student accounts have credits of "
+      f"{acct_pivot.loc['Student', 'Credit']:,.2f} against debits of "
+      f"{acct_pivot.loc['Student', 'Debit']:,.2f}. Confirm this on multi-year real "
+      f"data before changing any strategy.\n")
+
+print("Note: the data is synthetic and 'Flagged' does not mean fraud.")
+print("These are only patterns in the sample, not proof of cause.")
